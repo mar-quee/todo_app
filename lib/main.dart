@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -7,30 +8,82 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'package:todo_app/services/notification_service.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+
+// エラーハンドラー
+void _handleError(Object error, StackTrace stack) {
+  debugPrint('アプリケーションエラー: $error');
+  debugPrint(stack.toString());
+  // エラー報告などの追加処理をここに実装できる
+}
 
 // メイン関数を非同期にして通知の初期化を行う
-void main() async {
-  // Flutterのウィジェットバインディングを確実に初期化
+void main() {
+  // ウィジェットバインディングを確実に初期化（最初に行う）
   WidgetsFlutterBinding.ensureInitialized();
 
-  // macOS向けの設定
-  if (Platform.isMacOS) {
-    // ステータスバーの色を設定
-    SystemChrome.setSystemUIOverlayStyle(
-      SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarBrightness: Brightness.light,
-        statusBarIconBrightness: Brightness.dark,
-      ),
-    );
-  }
+  // 日本語ロケールのサポートを初期化
+  initializeDateFormatting('ja_JP');
 
-  // 通知サービスを初期化
-  final notificationService = NotificationService();
-  await notificationService.init();
+  // Flutterエラーのカスタムハンドリング
+  FlutterError.onError = (FlutterErrorDetails details) {
+    debugPrint('Flutter内部エラー: ${details.exception}');
+    FlutterError.dumpErrorToConsole(details);
+  };
 
-  // アプリを実行
-  runApp(const MyApp());
+  // Dartのエラーハンドリング
+  PlatformDispatcher.instance.onError = (error, stack) {
+    _handleError(error, stack);
+    return true; // エラーを処理済みとしてマーク
+  };
+
+  // 安全にアプリを起動するためのラッパー
+  runZonedGuarded<Future<void>>(
+    () async {
+      try {
+        // プラットフォーム依存の設定
+        if (Platform.isIOS || Platform.isMacOS) {
+          try {
+            // ステータスバーの色を設定
+            SystemChrome.setSystemUIOverlayStyle(
+              const SystemUiOverlayStyle(
+                statusBarColor: Colors.transparent,
+                statusBarBrightness: Brightness.light,
+                statusBarIconBrightness: Brightness.dark,
+              ),
+            );
+          } catch (e) {
+            debugPrint('UIスタイル設定エラー: $e');
+          }
+        }
+
+        // 通知サービスを初期化（ただしUIの表示を待たない）
+        final notificationService = NotificationService();
+
+        // アプリを先に表示
+        runApp(const MyApp());
+
+        // アプリが表示された後で通知の初期化を行う
+        await Future.delayed(const Duration(milliseconds: 500));
+        try {
+          await notificationService.init();
+          debugPrint('通知サービスの初期化に成功しました');
+        } catch (e) {
+          debugPrint('通知初期化エラー: $e');
+        }
+      } catch (e, stack) {
+        debugPrint('アプリケーション初期化エラー: $e');
+        debugPrint(stack.toString());
+
+        // エラーが発生してもUIを表示
+        runApp(const MyApp());
+      }
+    },
+    (error, stackTrace) {
+      _handleError(error, stackTrace);
+    },
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -44,17 +97,28 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
-        // macOS向けのUI調整
+        // iOS/macOS向けのUI調整
         visualDensity: VisualDensity.adaptivePlatformDensity,
         brightness: Brightness.light,
-        // macOS向けにフォントサイズを調整
+        // プラットフォームに応じたテキストテーマの調整
         textTheme:
-            Platform.isMacOS
-                ? Theme.of(
-                  context,
-                ).textTheme.apply(fontSizeFactor: 1.1, fontSizeDelta: 2.0)
+            (Platform.isMacOS || Platform.isIOS)
+                ? Typography.material2018().black.copyWith(
+                  bodyLarge: Typography.material2018().black.bodyLarge
+                      ?.copyWith(fontSize: 16),
+                  bodyMedium: Typography.material2018().black.bodyMedium
+                      ?.copyWith(fontSize: 14),
+                )
                 : null,
       ),
+      // 日本語ロケールの設定
+      locale: const Locale('ja', 'JP'),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [Locale('ja', 'JP'), Locale('en', 'US')],
       home: const TodoListScreen(),
     );
   }
@@ -799,37 +863,49 @@ class _TodoListScreenState extends State<TodoListScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 16.0),
                         child: DropdownButtonFormField<int>(
                           decoration: const InputDecoration(
-                            labelText: '期限の何時間前に通知するか',
+                            labelText: '期限の何分前に通知するか',
                           ),
                           value: tempReminderTime,
                           items: [
                             const DropdownMenuItem(
                               value: 1,
+                              child: Text('1分前'),
+                            ),
+                            const DropdownMenuItem(
+                              value: 5,
+                              child: Text('5分前'),
+                            ),
+                            const DropdownMenuItem(
+                              value: 15,
+                              child: Text('15分前'),
+                            ),
+                            const DropdownMenuItem(
+                              value: 30,
+                              child: Text('30分前'),
+                            ),
+                            const DropdownMenuItem(
+                              value: 60,
                               child: Text('1時間前'),
                             ),
                             const DropdownMenuItem(
-                              value: 3,
+                              value: 180,
                               child: Text('3時間前'),
                             ),
                             const DropdownMenuItem(
-                              value: 6,
+                              value: 360,
                               child: Text('6時間前'),
                             ),
                             const DropdownMenuItem(
-                              value: 12,
+                              value: 720,
                               child: Text('12時間前'),
                             ),
                             const DropdownMenuItem(
-                              value: 24,
+                              value: 1440,
                               child: Text('24時間前'),
                             ),
                             const DropdownMenuItem(
-                              value: 48,
+                              value: 2880,
                               child: Text('2日前'),
-                            ),
-                            const DropdownMenuItem(
-                              value: 72,
-                              child: Text('3日前'),
                             ),
                           ],
                           onChanged:
@@ -879,6 +955,7 @@ class _TodoListScreenState extends State<TodoListScreen> {
                         enableDueReminders: tempEnableDueReminders,
                         reminderTime: tempReminderTime,
                         notifyHighPriority: tempNotifyHighPriority,
+                        todos: _todoItems, // 既存のタスクリストを渡す
                       );
 
                       // 通知を再スケジュール
@@ -1027,9 +1104,67 @@ class _TodoEditScreenState extends State<TodoEditScreen> {
       lastDate: DateTime(2030),
       locale: const Locale('ja', 'JP'),
     );
-    if (picked != null && picked != _selectedDueDate) {
+    if (picked != null) {
       setState(() {
-        _selectedDueDate = picked;
+        // 既存の時間情報を保持する（既に時間が設定されている場合）
+        final currentTime =
+            _selectedDueDate != null
+                ? TimeOfDay.fromDateTime(_selectedDueDate!)
+                : const TimeOfDay(hour: 0, minute: 0);
+
+        // 選択された日付と現在の時間を組み合わせる
+        _selectedDueDate = DateTime(
+          picked.year,
+          picked.month,
+          picked.day,
+          currentTime.hour,
+          currentTime.minute,
+        );
+      });
+    }
+  }
+
+  // 時間選択ダイアログを表示
+  Future<void> _selectTime(BuildContext context) async {
+    // 現在選択されている時間または現在時刻をデフォルトにする
+    final TimeOfDay initialTime =
+        _selectedDueDate != null
+            ? TimeOfDay.fromDateTime(_selectedDueDate!)
+            : TimeOfDay.now();
+
+    final TimeOfDay? pickedTime = await showTimePicker(
+      context: context,
+      initialTime: initialTime,
+      builder: (BuildContext context, Widget? child) {
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
+          child: child!,
+        );
+      },
+    );
+
+    if (pickedTime != null && _selectedDueDate != null) {
+      setState(() {
+        // 選択された時間と現在の日付を組み合わせる
+        _selectedDueDate = DateTime(
+          _selectedDueDate!.year,
+          _selectedDueDate!.month,
+          _selectedDueDate!.day,
+          pickedTime.hour,
+          pickedTime.minute,
+        );
+      });
+    } else if (pickedTime != null) {
+      // 日付が未設定の場合は今日の日付と選択された時間を組み合わせる
+      final now = DateTime.now();
+      setState(() {
+        _selectedDueDate = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          pickedTime.hour,
+          pickedTime.minute,
+        );
       });
     }
   }
@@ -1171,12 +1306,37 @@ class _TodoEditScreenState extends State<TodoEditScreen> {
                   child: Text(
                     _selectedDueDate == null
                         ? '期限日なし'
-                        : '期限日: ${DateFormat('yyyy/MM/dd').format(_selectedDueDate!)}',
+                        : '期限日: ${DateFormat('yyyy/MM/dd HH:mm').format(_selectedDueDate!)}',
                   ),
                 ),
                 TextButton(
                   onPressed: () => _selectDate(context),
                   child: const Text('日付を選択'),
+                ),
+                if (_selectedDueDate != null)
+                  IconButton(
+                    icon: const Icon(Icons.clear),
+                    onPressed: () {
+                      setState(() {
+                        _selectedDueDate = null;
+                      });
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8.0),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _selectedDueDate == null
+                        ? '時間なし'
+                        : '時間: ${DateFormat('HH:mm').format(_selectedDueDate!)}',
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => _selectTime(context),
+                  child: const Text('時間を選択'),
                 ),
                 if (_selectedDueDate != null)
                   IconButton(
